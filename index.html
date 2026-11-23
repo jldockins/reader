@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Reader</title>
+  <meta name="description" content="Track the books you're reading and how fast you read them.">
+  <meta name="theme-color" content="#f6f3ee" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#17171a" media="(prefers-color-scheme: dark)">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Reader">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1 id="view-title">Books</h1>
+    <button id="add-book-btn" class="icon-btn" aria-label="Add a book">+</button>
+  </header>
+
+  <div id="active-banner" class="active-banner" hidden></div>
+
+  <main id="view"></main>
+
+  <nav class="tabbar" aria-label="Sections">
+    <button class="tab active" data-tab="books">
+      <span class="tab-icon" aria-hidden="true">📚</span><span>Books</span>
+    </button>
+    <button class="tab" data-tab="stats">
+      <span class="tab-icon" aria-hidden="true">📈</span><span>Speed</span>
+    </button>
+    <button class="tab" data-tab="settings">
+      <span class="tab-icon" aria-hidden="true">⚙️</span><span>Settings</span>
+    </button>
+  </nav>
+
+  <div id="sheet-backdrop" class="sheet-backdrop" hidden></div>
+  <section id="sheet" class="sheet" role="dialog" aria-modal="true" hidden></section>
+
+  <div id="toast" class="toast" role="status" hidden></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
