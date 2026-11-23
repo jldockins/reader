@@ -17,7 +17,18 @@ It's a Progressive Web App (PWA): plain HTML, CSS and JavaScript with no build s
   1. Count the words on one full page. This is the most accurate.
   2. Count the words on 3 lines and the number of lines on a page.
   3. Enter the book's total word count, if you know it. It's divided by the edition's page count.
-- **Backup**: in Settings you can export and import a JSON file. Your data is stored only in your phone's browser (localStorage).
+- **Sync between devices (optional)**: use Reader on your phone and your computer with the same books. Turn it on under **Settings → Sync between devices** on each device:
+  1. Tap **Create a GitHub token**. The link opens GitHub with only the **gist** permission selected. Generate the token and copy it.
+  2. Paste the token into Reader and tap **Connect**. You can use the same token on each device.
+
+  Reader then saves a copy of your books and sessions in a secret Gist (a small file in your GitHub account) named *Reader app — reading log sync*. It syncs when you open the app and after every change. If both devices changed things while offline, the changes are combined: the newest edit to a book wins, and deletions carry over to the other device. The token is stored only on that device. A secret Gist is unlisted, not fully private: anyone with its exact link could read it.
+- **Backup**: in Settings you can export and import a JSON file.
+
+## Where your data lives
+
+- **Your books and sessions** are stored in the browser on each device (localStorage). If sync is on, a copy is also kept in your secret Gist.
+- **The GitHub repository and GitHub Pages** only hold the app's code. They never receive your reading data.
+- **ISBN lookups** send only the ISBN number to Open Library or Google Books.
 
 ## Run it on your computer
 

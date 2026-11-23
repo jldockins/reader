@@ -2,7 +2,8 @@
 
 /* ============================================================
    Reader — track books and reading speed (words per minute)
-   All data lives in this browser's localStorage on your phone.
+   Data lives in this browser's localStorage. Optional sync keeps a
+   copy in a secret GitHub Gist so several devices share the same books.
    ============================================================ */
 
 const STORAGE_KEY = 'reader.v1';
@@ -13,10 +14,17 @@ const defaultState = () => ({
   sessions: [],   // {id, bookId, date, durationSec, startPage, endPage, pages, words, wpm}
   active: null,   // {bookId, startPage, startedAt, accumulatedMs, runningSince}
   settings: { defaultWordsPerPage: 250 },
+  deleted: {},    // {id: deletedAt} — remembers deletions so sync can pass them to other devices
   ui: { tab: 'books', bookFilter: 'reading', statsBook: 'all' },
 });
 
+// What the data looked like at the last save. Comparing against it tells us which
+// books changed (so they get a fresh updatedAt) and which were deleted.
+let snapshot = { books: new Map(), sessions: new Set(), settings: '' };
+
 let state = load();
+for (const b of state.books) if (!b.updatedAt) b.updatedAt = b.createdAt || Date.now();
+takeSnapshot();
 
 function load() {
   try {
@@ -36,12 +44,47 @@ function load() {
   }
 }
 
-function save() {
+function withoutStamp({ updatedAt, ...rest }) { return JSON.stringify(rest); }
+
+function takeSnapshot() {
+  snapshot = {
+    books: new Map(state.books.map((b) => [b.id, withoutStamp(b)])),
+    sessions: new Set(state.sessions.map((x) => x.id)),
+    settings: withoutStamp(state.settings),
+  };
+}
+
+/** Stamps changed books/settings and records deletions. Returns true if synced data changed. */
+function stampChanges() {
+  const now = Date.now();
+  let changed = false;
+  state.deleted = state.deleted || {};
+  for (const b of state.books) {
+    if (snapshot.books.get(b.id) !== withoutStamp(b)) { b.updatedAt = now; changed = true; }
+  }
+  const bookIds = new Set(state.books.map((b) => b.id));
+  for (const id of snapshot.books.keys()) if (!bookIds.has(id)) { state.deleted[id] = now; changed = true; }
+  const sessionIds = new Set(state.sessions.map((x) => x.id));
+  for (const id of snapshot.sessions) if (!sessionIds.has(id)) { state.deleted[id] = now; changed = true; }
+  for (const id of sessionIds) if (!snapshot.sessions.has(id)) changed = true;
+  if (withoutStamp(state.settings) !== snapshot.settings) { state.settings.updatedAt = now; changed = true; }
+  return changed;
+}
+
+/** Writes to this device's storage. */
+function persist() {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   } catch (e) {
     toast('Could not save — storage may be full or blocked.');
   }
+}
+
+function save() {
+  const changed = stampChanges();
+  takeSnapshot();
+  persist();
+  if (changed) scheduleSync();
 }
 
 /* ---------- helpers ---------- */
@@ -296,9 +339,11 @@ function renderSettings() {
         <input type="number" inputmode="numeric" min="50" max="1000" value="${state.settings.defaultWordsPerPage}" data-action="default-wpp"></label>
       <div class="prose"><p>A typical paperback has about 250–300 words per page. You can set a different number for each book.</p></div>
     </div>
+    <div class="section-title">Sync between devices</div>
+    ${syncSection()}
     <div class="section-title">Your data</div>
     <div class="card">
-      <div class="prose"><p>${state.books.length} books · ${st.count} sessions. Your data is stored only on this device. Export a backup now and then so you don't lose it if you clear your browser.</p></div>
+      <div class="prose"><p>${state.books.length} books · ${st.count} sessions. ${syncCfg.token ? 'Stored on this device and synced to your GitHub Gist.' : "Stored only on this device. Export a backup now and then so you don't lose it if you clear your browser."}</p></div>
       <button class="btn secondary" data-action="export">Export backup</button>
       <button class="btn secondary" data-action="import">Import backup</button>
       <input type="file" id="import-file" accept="application/json,.json" hidden>
@@ -925,6 +970,208 @@ async function lookupAndFill(raw) {
       : 'No page count listed — enter it from your copy.'}</div>`;
 }
 
+/* ---------- sync between devices (GitHub Gist) ---------- */
+
+const SYNC_KEY = 'reader.sync';           // kept apart from the data so "Erase" doesn't disconnect
+const GIST_FILE = 'reader-data.json';
+const GIST_DESC = 'Reader app — reading log sync (do not rename)';
+const TOKEN_URL = 'https://github.com/settings/tokens/new?scopes=gist&description=Reader%20app%20sync';
+
+let syncCfg = loadSyncCfg();               // {token, gistId, lastSync, lastError}
+let syncing = false, syncAgain = false, syncTimer = null;
+
+function loadSyncCfg() {
+  try { return JSON.parse(localStorage.getItem(SYNC_KEY)) || {}; } catch { return {}; }
+}
+function saveSyncCfg() {
+  try { localStorage.setItem(SYNC_KEY, JSON.stringify(syncCfg)); } catch { /* ignore */ }
+}
+
+function scheduleSync() {
+  if (!syncCfg.token) return;
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(() => sync({ quiet: true }), 1500);
+}
+
+async function gh(path, opts = {}) {
+  const res = await fetch(`https://api.github.com${path}`, {
+    ...opts,
+    cache: 'no-store',
+    headers: {
+      Accept: 'application/vnd.github+json',
+      Authorization: `Bearer ${syncCfg.token}`,
+      'X-GitHub-Api-Version': '2022-11-28',
+      ...(opts.body ? { 'Content-Type': 'application/json' } : {}),
+    },
+  });
+  if (res.status === 401) throw Object.assign(new Error('GitHub rejected the token. It may have expired — create a new one and connect again.'), { status: 401 });
+  if (res.status === 403 || res.status === 404) throw Object.assign(new Error(res.status === 404 ? 'Not found' : 'This token is missing the "gist" permission.'), { status: res.status });
+  if (!res.ok) throw Object.assign(new Error(`GitHub error ${res.status}`), { status: res.status });
+  return res.status === 204 ? null : res.json();
+}
+
+const syncPayload = (d) => ({
+  app: 'reader', version: 1,
+  books: d.books || [], sessions: d.sessions || [], deleted: d.deleted || {}, settings: d.settings || {},
+});
+
+/** Combines two copies of the data. Newest edit of a book wins; deletions always win. */
+function mergeData(a, b) {
+  const deleted = { ...(a.deleted || {}) };
+  for (const [id, t] of Object.entries(b.deleted || {})) deleted[id] = Math.max(deleted[id] || 0, t);
+
+  const pick = (lists) => {
+    const m = new Map();
+    for (const item of lists.flat()) {
+      const cur = m.get(item.id);
+      if (!cur || (item.updatedAt || 0) > (cur.updatedAt || 0)) m.set(item.id, item);
+    }
+    return [...m.values()].filter((x) => !(x.id in deleted));
+  };
+  const sa = a.settings || {}, sb = b.settings || {};
+  return {
+    books: pick([a.books || [], b.books || []]),
+    sessions: pick([a.sessions || [], b.sessions || []]),
+    deleted,
+    settings: (sb.updatedAt || 0) > (sa.updatedAt || 0) ? { ...sa, ...sb } : { ...sb, ...sa },
+  };
+}
+
+async function findOrCreateGist() {
+  for (let page = 1; page <= 10; page++) {
+    const list = await gh(`/gists?per_page=100&page=${page}`);
+    const found = list.find((g) => g.files && g.files[GIST_FILE] && g.description === GIST_DESC);
+    if (found) return found.id;
+    if (list.length < 100) break;
+  }
+  const created = await gh('/gists', {
+    method: 'POST',
+    body: JSON.stringify({
+      description: GIST_DESC,
+      public: false,
+      files: { [GIST_FILE]: { content: JSON.stringify(syncPayload(state), null, 1) } },
+    }),
+  });
+  return created.id;
+}
+
+async function readGist(id) {
+  const g = await gh(`/gists/${id}`);
+  const f = g.files && g.files[GIST_FILE];
+  if (!f) return null;
+  let text = f.content;
+  if (f.truncated) text = await (await fetch(f.raw_url, { cache: 'no-store' })).text();
+  try { return JSON.parse(text); } catch { return null; }
+}
+
+async function sync({ quiet = false } = {}) {
+  if (!syncCfg.token || !navigator.onLine) return;
+  if (syncing) { syncAgain = true; return; }
+  syncing = true;
+  clearTimeout(syncTimer);
+  try {
+    if (!syncCfg.gistId) { syncCfg.gistId = await findOrCreateGist(); saveSyncCfg(); }
+    let remote;
+    try {
+      remote = await readGist(syncCfg.gistId);
+    } catch (err) {
+      if (err.status !== 404) throw err;
+      syncCfg.gistId = await findOrCreateGist(); // the gist was deleted; start a new one
+      saveSyncCfg();
+      remote = await readGist(syncCfg.gistId);
+    }
+    const merged = mergeData(syncPayload(remote || {}), syncPayload(state));
+    // Merge again with whatever is on this device *now*, in case you edited during the request.
+    stampChanges();
+    const final = mergeData(merged, syncPayload(state));
+    state.books = final.books;
+    state.sessions = final.sessions;
+    state.deleted = final.deleted;
+    state.settings = { ...defaultState().settings, ...final.settings };
+    if (state.active && !getBook(state.active.bookId)) state.active = null;
+    takeSnapshot();
+    persist();
+
+    const out = JSON.stringify(syncPayload(final), null, 1);
+    if (!remote || JSON.stringify(syncPayload(remote), null, 1) !== out) {
+      await gh(`/gists/${syncCfg.gistId}`, { method: 'PATCH', body: JSON.stringify({ files: { [GIST_FILE]: { content: out } } }) });
+    }
+    syncCfg.lastSync = Date.now();
+    syncCfg.lastError = '';
+    saveSyncCfg();
+    if (!quiet) toast('Synced');
+  } catch (err) {
+    syncCfg.lastError = err.message || 'Sync failed';
+    saveSyncCfg();
+    if (!quiet) toast(syncCfg.lastError);
+  } finally {
+    syncing = false;
+    if ($('#sheet').hidden) render();
+    if (syncAgain) { syncAgain = false; sync({ quiet: true }); }
+  }
+}
+
+async function connectSync(token) {
+  token = token.trim();
+  if (!token) return toast('Paste your token first.');
+  syncCfg = { token };
+  saveSyncCfg();
+  toast('Connecting…');
+  await sync();
+  if (syncCfg.lastError) {
+    const msg = syncCfg.lastError;
+    syncCfg = { lastError: msg };   // don't keep a token that doesn't work
+    saveSyncCfg();
+    render();
+  }
+}
+
+function disconnectSync() {
+  if (!confirm('Stop syncing on this device? Your books stay here, and the copy on GitHub is kept for your other devices.')) return;
+  syncCfg = {};
+  saveSyncCfg();
+  render();
+  toast('Sync turned off on this device');
+}
+
+function timeAgo(ts) {
+  const s = Math.round((Date.now() - ts) / 1000);
+  if (s < 45) return 'just now';
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  if (s < 86400) return `${Math.round(s / 3600)} h ago`;
+  return fmtDate(ts);
+}
+
+function syncSection() {
+  if (syncCfg.token) {
+    const status = syncing
+      ? 'Syncing…'
+      : syncCfg.lastError
+        ? `<span class="error">Last sync failed: ${esc(syncCfg.lastError)}</span>`
+        : syncCfg.lastSync ? `Last synced ${timeAgo(syncCfg.lastSync)}` : 'Not synced yet';
+    return `<div class="card">
+      <div class="sync-status"><span class="sync-dot ${syncCfg.lastError ? 'bad' : ''}"></span><div><strong>Sync is on</strong><br><span class="secondary">${status}</span></div></div>
+      <div class="prose"><p>Books and sessions are shared with your other devices through a secret Gist in your GitHub account. It syncs when you open the app and after each change.</p></div>
+      <button class="btn secondary" data-action="sync-now">Sync now</button>
+      <button class="btn danger" data-action="sync-disconnect">Turn off sync on this device</button>
+    </div>`;
+  }
+  return `<div class="card">
+    <div class="prose">
+      <p>Use Reader on your phone <em>and</em> your computer with the same books. Your data is kept in a secret Gist in your GitHub account. Set this up once on each device:</p>
+      <ol class="steps">
+        <li><a href="${TOKEN_URL}" target="_blank" rel="noopener">Create a GitHub token</a>. The link pre-selects only the <strong>gist</strong> permission. Pick an expiration (or "No expiration"), then tap <em>Generate token</em> and copy it.</li>
+        <li>Paste it below and tap <strong>Connect</strong>. You can reuse the same token on your other device.</li>
+      </ol>
+    </div>
+    ${syncCfg.lastError ? `<p class="error">${esc(syncCfg.lastError)}</p>` : ''}
+    <label class="field"><span>GitHub token</span>
+      <input id="sync-token" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="ghp_…"></label>
+    <button class="btn" data-action="sync-connect">Connect</button>
+    <div class="hint">The token is saved only on this device and only sent to GitHub. A secret Gist is unlisted, not fully private: anyone with its exact link could read your reading log.</div>
+  </div>`;
+}
+
 /* ---------- backup ---------- */
 
 function exportData() {
@@ -1040,11 +1287,14 @@ document.addEventListener('click', (e) => {
       state.active = null; save(); closeSheet();
       break;
     case 'manual-session': manualSessionSheet(id); break;
+    case 'sync-connect': connectSync($('#sync-token').value); break;
+    case 'sync-now': sync(); render(); break;
+    case 'sync-disconnect': disconnectSync(); break;
     case 'export': exportData(); break;
     case 'import': $('#import-file').click(); break;
     case 'reset':
-      if (!confirm('Erase all books and sessions on this device? This cannot be undone. Export a backup first if you want to keep them.')) return;
-      state = defaultState(); save(); render(); toast('All data erased');
+      if (!confirm(`Erase all books and sessions?${syncCfg.token ? ' Sync is on, so they will be erased on your other devices too.' : ''} This cannot be undone. Export a backup first if you want to keep them.`)) return;
+      state = { ...defaultState(), deleted: state.deleted }; save(); render(); toast('All data erased');
       break;
   }
 });
@@ -1070,14 +1320,18 @@ setInterval(() => {
   document.querySelectorAll('[data-clock]').forEach((el) => (el.textContent = text));
 }, 500);
 
-// Re-read storage when returning to the app (e.g. another tab changed it).
+// Coming back to the app: re-read storage (another tab may have changed it) and sync.
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && $('#sheet').hidden) { state = load(); render(); }
+  if (document.visibilityState !== 'visible') return;
+  if ($('#sheet').hidden) { state = load(); takeSnapshot(); render(); }
+  sync({ quiet: true });
 });
+window.addEventListener('online', () => sync({ quiet: true }));
 
 if (state.ui.statsBook !== 'all' && !getBook(state.ui.statsBook)) state.ui.statsBook = 'all';
 render();
 if (state.active) timerSheet();
+sync({ quiet: true });
 
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   navigator.serviceWorker.register('sw.js').catch(() => {});

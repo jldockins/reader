@@ -1,5 +1,5 @@
 // Offline support: always try the network, keep a cached copy for offline use.
-const VERSION = 'reader-v5';
+const VERSION = 'reader-v6';
 const FILES = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.json',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'];
 

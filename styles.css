@@ -351,3 +351,13 @@ main { padding: 4px 20px 28px; max-width: 640px; margin: 0 auto; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* ---------- sync ---------- */
+.steps { margin: 0 0 12px; padding-left: 20px; }
+.steps li { margin-bottom: 6px; }
+.steps a, .prose a { color: var(--accent); font-weight: 600; }
+.error { color: var(--danger); font-size: 14px; }
+.sync-status { display: flex; gap: 12px; align-items: center; margin-bottom: 10px; }
+.sync-status .secondary { font-size: 13px; color: var(--ink-3); }
+.sync-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); flex: none; box-shadow: 0 0 0 4px var(--accent-soft); }
+.sync-dot.bad { background: var(--danger); box-shadow: 0 0 0 4px color-mix(in srgb, var(--danger) 18%, transparent); }
