@@ -131,44 +131,111 @@ function render() {
   renderBanner();
 }
 
+/* Small line icons (drawn with currentColor so they follow the theme). */
+const ICONS = {
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  play: '<path d="M8 5.5v13l10.5-6.5z" fill="currentColor" stroke="none"/>',
+  camera: '<path d="M4 8h3l2-2.5h6L17 8h3v11H4z"/><circle cx="12" cy="13" r="3.5"/>',
+  book: '<path d="M4 5.5C6.5 4.5 9.5 4.5 12 6c2.5-1.5 5.5-1.5 8-.5V19c-2.5-1-5.5-1-8 .5-2.5-1.5-5.5-1.5-8-.5z"/><path d="M12 6v13.5"/>',
+  chart: '<path d="M4 19h16"/><path d="M5 15l4-5 4 3 6-7"/>',
+  gear: '<circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/>',
+};
+const icon = (name, cls = 'ic') =>
+  `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
+
+/* A cover image, with a colored placeholder underneath that shows when there is no image. */
+function coverHtml(b, cls = '') {
+  let h = 0;
+  for (const ch of b.title || '') h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  const hues = [158, 18, 210, 280, 35, 340, 190];
+  const hue = hues[h % hues.length];
+  return `<div class="cover ${cls}" style="--hue:${hue}">
+    <span class="cover-title">${esc(b.title)}</span>
+    ${b.cover ? `<img src="${esc(b.cover)}" alt="" loading="lazy" onerror="this.remove()">` : ''}
+  </div>`;
+}
+
+function lastReadAt(bookId) {
+  let t = 0;
+  for (const s of state.sessions) if (s.bookId === bookId && s.date > t) t = s.date;
+  return t;
+}
+
+function featuredCard(b) {
+  const st = summarize(sessionsFor(b.id));
+  const pct = Math.min(100, (b.currentPage / b.totalPages) * 100);
+  const left = Math.max(0, b.totalPages - b.currentPage);
+  const remainingSec = st.avgWpm ? ((left * b.wordsPerPage) / st.avgWpm) * 60 : null;
+  const isActive = state.active && state.active.bookId === b.id;
+  const otherActive = state.active && !isActive;
+  return `<div class="feature">
+    <div class="feature-label">Continue reading</div>
+    <div class="feature-body" data-action="open-book" data-id="${b.id}">
+      ${coverHtml(b, 'cover-lg')}
+      <div class="grow">
+        <h2>${esc(b.title)}</h2>
+        ${b.author ? `<div class="author">${esc(b.author)}</div>` : ''}
+        <div class="feature-stats">
+          <span><strong>${Math.round(pct)}%</strong> done</span>
+          ${st.avgWpm ? `<span><strong>${num(st.avgWpm)}</strong> wpm</span>` : ''}
+          ${remainingSec != null ? `<span><strong>${fmtDuration(remainingSec)}</strong> left</span>` : `<span><strong>${left}</strong> pages left</span>`}
+        </div>
+      </div>
+    </div>
+    <div class="progress"><span style="width:${pct.toFixed(1)}%"></span></div>
+    ${isActive
+      ? `<button class="btn" data-action="open-timer">Back to timer · <span data-clock>${fmtClock(activeElapsedMs())}</span></button>`
+      : `<button class="btn" data-action="start-session" data-id="${b.id}" ${otherActive ? 'disabled' : ''}>${icon('play')} Start reading</button>`}
+  </div>`;
+}
+
 function renderBooks() {
   const f = state.ui.bookFilter;
-  const filters = [['reading', 'Reading'], ['want', 'Want to read'], ['finished', 'Finished']];
+  const filters = [['reading', 'Reading'], ['want', 'To read'], ['finished', 'Finished']];
+
+  if (!state.books.length) {
+    return `<div class="empty">
+      <div class="empty-art">${icon('book', 'ic-xl')}</div>
+      <h2>Start your reading log</h2>
+      <p>Add the book you're reading — scan its barcode to fill in the details — then time a session to see your words per minute.</p>
+      <button class="btn" data-action="add-book">${icon('plus')} Add your first book</button></div>`;
+  }
+
+  const reading = state.books.filter((b) => b.status === 'reading');
+  const featured = state.active
+    ? getBook(state.active.bookId)
+    : reading.sort((a, b) => (lastReadAt(b.id) || b.createdAt) - (lastReadAt(a.id) || a.createdAt))[0];
+
   const books = state.books
-    .filter((b) => b.status === f)
-    .sort((a, b) => (b.finishedAt || b.createdAt) - (a.finishedAt || a.createdAt));
+    .filter((b) => b.status === f && b !== featured)
+    .sort((a, b) => (b.finishedAt || lastReadAt(b.id) || b.createdAt) - (a.finishedAt || lastReadAt(a.id) || a.createdAt));
 
   const seg = `<div class="segmented" role="tablist">${filters
     .map(([k, label]) => {
       const n = state.books.filter((b) => b.status === k).length;
-      return `<button data-action="filter" data-filter="${k}" class="${k === f ? 'active' : ''}">${label}${n ? ` (${n})` : ''}</button>`;
+      return `<button data-action="filter" data-filter="${k}" class="${k === f ? 'active' : ''}">${label}${n ? `<span class="count">${n}</span>` : ''}</button>`;
     })
     .join('')}</div>`;
 
-  if (!state.books.length) {
-    return `${seg}<div class="empty"><div class="big">📖</div>
-      <p><strong>No books yet</strong></p>
-      <p>Add the book you're reading, then start a timed session to measure your words per minute.</p>
-      <button class="btn" data-action="add-book">Add your first book</button></div>`;
-  }
-  if (!books.length) {
-    return `${seg}<div class="empty"><p>Nothing here yet.</p></div>`;
-  }
-
-  return seg + books.map(bookCard).join('');
+  const emptyText = { reading: featured ? 'No other books in progress.' : 'Nothing in progress.', want: 'Add books you plan to read next.', finished: 'Finished books will show up here.' }[f];
+  return (featured ? featuredCard(featured) : '') + seg +
+    (books.length ? `<div class="shelf">${books.map(bookCard).join('')}</div>` : `<div class="empty small"><p>${emptyText}</p></div>`);
 }
 
 function bookCard(b) {
   const st = summarize(sessionsFor(b.id));
   const pct = b.totalPages ? Math.min(100, (b.currentPage / b.totalPages) * 100) : 0;
-  return `<button class="card book-card" data-action="open-book" data-id="${b.id}">
-    <div class="row">
-      ${b.cover ? `<img class="cover" src="${esc(b.cover)}" alt="" loading="lazy" onerror="this.remove()">` : ''}
-      <div class="grow"><h3>${esc(b.title)}</h3>${b.author ? `<div class="author">${esc(b.author)}</div>` : ''}</div>
-      ${st.avgWpm ? `<div class="wpm">${num(st.avgWpm)} <small>wpm</small></div>` : ''}
+  const right = b.status === 'finished'
+    ? `Finished ${b.finishedAt ? fmtDate(b.finishedAt) : ''}`
+    : b.status === 'want' ? `${b.totalPages} pages` : `${Math.round(pct)}%`;
+  return `<button class="book-card" data-action="open-book" data-id="${b.id}">
+    ${coverHtml(b)}
+    <div class="grow">
+      <h3>${esc(b.title)}</h3>
+      ${b.author ? `<div class="author">${esc(b.author)}</div>` : ''}
+      ${b.status === 'reading' ? `<div class="progress"><span style="width:${pct.toFixed(1)}%"></span></div>` : ''}
+      <div class="meta"><span>${right}</span>${st.avgWpm ? `<span class="pill">${num(st.avgWpm)} wpm</span>` : ''}</div>
     </div>
-    <div class="progress"><span style="width:${pct.toFixed(1)}%"></span></div>
-    <div class="meta"><span>Page ${b.currentPage} of ${b.totalPages}</span><span>${Math.round(pct)}%${st.sec ? ` · ${fmtDuration(st.sec)} read` : ''}</span></div>
   </button>`;
 }
 
@@ -179,8 +246,8 @@ function renderStats() {
   const booksWithSessions = state.books.filter((b) => state.sessions.some((s) => s.bookId === b.id));
 
   if (!state.sessions.length) {
-    return `<div class="empty"><div class="big">⏱️</div>
-      <p><strong>No reading sessions yet</strong></p>
+    return `<div class="empty"><div class="empty-art">${icon('chart', 'ic-xl')}</div>
+      <h2>No reading sessions yet</h2>
       <p>Open a book and tap <em>Start reading</em>. When you stop, enter the page you reached and Reader works out your words per minute.</p></div>`;
   }
 
@@ -193,7 +260,7 @@ function renderStats() {
   const recent = [...all].sort((a, b) => b.date - a.date).slice(0, 15);
 
   return `${select}
-    <div class="stat hero">
+    <div class="hero">
       <div class="label">Average reading speed</div>
       <div class="value">${st.avgWpm ? num(st.avgWpm) : '—'} <small>wpm</small></div>
       <div class="label">${last7.avgWpm ? `Last 7 days: ${num(last7.avgWpm)} wpm` : 'Based on all timed sessions'}</div>
@@ -250,11 +317,12 @@ function renderSettings() {
 const CHART = { w: 600, h: 200, l: 40, r: 10, t: 12, b: 24 };
 let chartPoints = [];
 
-function niceMax(v) {
-  if (v <= 0) return 100;
-  const step = Math.pow(10, Math.floor(Math.log10(v)));
-  for (const m of [1, 2, 2.5, 5, 10]) if (m * step >= v) return m * step;
-  return 10 * step;
+/** A round step (1, 2, 2.5 or 5 × a power of ten) that splits 0..v into about `parts` pieces. */
+function niceStep(v, parts = 4) {
+  const raw = Math.max(v, 1) / parts;
+  const pow = Math.pow(10, Math.floor(Math.log10(raw)));
+  for (const m of [1, 2, 2.5, 5, 10]) if (m * pow >= raw) return m * pow;
+  return 10 * pow;
 }
 
 function chartSvg(sessions, avg) {
@@ -266,12 +334,14 @@ function chartSvg(sessions, avg) {
   // Draw at the card's real pixel width so text stays readable on phones.
   CHART.w = Math.max(260, Math.min(600, ($('#view').clientWidth || 360) - 32 - 32));
   const { w, h, l, r, t, b } = CHART;
-  const yMax = niceMax(Math.max(...pts.map((p) => p.wpm)) * 1.1);
+  const step = niceStep(Math.max(...pts.map((p) => p.wpm)) * 1.1);
+  const yMax = Math.ceil((Math.max(...pts.map((p) => p.wpm)) * 1.1) / step) * step;
   const x = (i) => (pts.length === 1 ? l + (w - l - r) / 2 : l + (i * (w - l - r)) / (pts.length - 1));
   const y = (v) => t + (h - t - b) * (1 - v / yMax);
   chartPoints = pts.map((p, i) => ({ x: x(i), y: y(p.wpm), s: p }));
 
-  const ticks = [0, 0.25, 0.5, 0.75, 1].map((f) => f * yMax);
+  const ticks = [];
+  for (let v = 0; v <= yMax + 1e-9; v += step) ticks.push(v);
   const grid = ticks.map((v) => `<line x1="${l}" x2="${w - r}" y1="${y(v)}" y2="${y(v)}"/>`).join('');
   const yLabels = ticks.map((v) => `<text x="${l - 6}" y="${y(v) + 4}" text-anchor="end">${num(v)}</text>`).join('');
   const xLabels = pts.length > 1
@@ -279,6 +349,9 @@ function chartSvg(sessions, avg) {
        <text x="${x(pts.length - 1)}" y="${h - 6}" text-anchor="end">${fmtDate(pts[pts.length - 1].date)}</text>`
     : `<text x="${x(0)}" y="${h - 6}" text-anchor="middle">${fmtDate(pts[0].date)}</text>`;
   const path = chartPoints.map((p, i) => `${i ? 'L' : 'M'}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join('');
+  const area = pts.length > 1
+    ? `<path class="area" d="${path}L${chartPoints[chartPoints.length - 1].x.toFixed(1)},${y(0)}L${chartPoints[0].x.toFixed(1)},${y(0)}Z"/>`
+    : '';
   const dots = pts.length <= 20 ? chartPoints.map((p) => `<circle class="dot" cx="${p.x}" cy="${p.y}" r="4"/>`).join('') : '';
   const avgLine = avg
     ? `<line class="avg" x1="${l}" x2="${w - r}" y1="${y(avg)}" y2="${y(avg)}"/>`
@@ -288,6 +361,11 @@ function chartSvg(sessions, avg) {
     <svg id="chart" viewBox="0 0 ${w} ${h}" role="img" aria-label="Words per minute for your last ${pts.length} sessions">
       <g class="grid">${grid}</g>
       <g class="axis">${yLabels}${xLabels}</g>
+      <defs><linearGradient id="area-fill" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" style="stop-color:var(--chart-line);stop-opacity:.22"/>
+        <stop offset="1" style="stop-color:var(--chart-line);stop-opacity:0"/>
+      </linearGradient></defs>
+      ${area}
       ${avgLine}
       <path class="series" d="${path}"/>
       ${dots}
@@ -382,7 +460,8 @@ function bookFormSheet(book) {
     <div class="sheet-head"><h2>${book ? 'Edit book' : 'Add a book'}</h2>
       <button class="link-btn" data-action="close">Cancel</button></div>
     <form id="book-form" autocomplete="off">
-      <button type="button" class="btn secondary scan-btn" data-action="scan">📷 Scan barcode</button>
+      <button type="button" class="btn scan-btn" data-action="scan">${icon('camera')} Scan the barcode</button>
+      <div class="or"><span>or enter the details</span></div>
       <div class="lookup-row">
         <label class="field"><span>ISBN (optional)</span>
           <input name="isbn" inputmode="numeric" value="${esc(b.isbn || '')}" placeholder="978…"></label>
@@ -475,7 +554,7 @@ function bookDetailSheet(id) {
 
   openSheet(`
     <div class="sheet-head">
-      ${b.cover ? `<img class="cover" src="${esc(b.cover)}" alt="" onerror="this.remove()">` : ''}
+      ${coverHtml(b, 'cover-md')}
       <div class="grow"><h2>${esc(b.title)}</h2>${b.author ? `<div class="sub">${esc(b.author)}</div>` : ''}
         ${editionLine(b) ? `<div class="edition">${esc(editionLine(b))}</div>` : ''}</div>
       <button class="link-btn" data-action="close">Done</button>
@@ -492,10 +571,10 @@ function bookDetailSheet(id) {
 
     ${isActiveHere
       ? `<button class="btn" data-action="open-timer">Back to timer · <span data-clock>${fmtClock(activeElapsedMs())}</span></button>`
-      : `<button class="btn" data-action="start-session" data-id="${id}" ${otherActive ? 'disabled' : ''}>▶ Start reading</button>
+      : `<button class="btn" data-action="start-session" data-id="${id}" ${otherActive ? 'disabled' : ''}>${icon('play')} Start reading</button>
          ${otherActive ? `<div class="hint" style="text-align:center;margin-top:6px">Finish your other session first.</div>` : ''}`}
     <div class="btn-row">
-      <button class="btn secondary" data-action="manual-session" data-id="${id}">Log past session</button>
+      <button class="btn secondary" data-action="manual-session" data-id="${id}">Log session</button>
       <button class="btn secondary" data-action="edit-book" data-id="${id}">Edit book</button>
     </div>
     ${b.status !== 'finished' ? `<button class="btn secondary" data-action="finish-book" data-id="${id}">Mark as finished</button>` : ''}
@@ -529,7 +608,7 @@ function timerSheet() {
     </div>
     <div class="timer">
       <div class="clock" data-clock>${fmtClock(activeElapsedMs())}</div>
-      <div class="state">${running ? 'Timer running — keep reading' : 'Paused'}</div>
+      <div class="state">${running ? '<span class="live-dot"></span>Timer running — keep reading' : 'Paused'}</div>
     </div>
     <label class="field"><span>Started on page</span>
       <input id="start-page" type="number" inputmode="numeric" min="0" max="${b.totalPages}" value="${a.startPage}"></label>

@@ -10,7 +10,7 @@ It's a Progressive Web App (PWA): plain HTML, CSS and JavaScript with no build s
 - **Books**: add a book with its title, author, total pages, current page and **words per page**. Books are sorted into Reading, Want to read and Finished.
 - **Timed reading sessions**: tap **Start reading**. The timer keeps running if you lock your phone or close the app. Tap **Stop & log pages** and enter the page you reached.
 - **Reading speed**: `WPM = (pages read × words per page) ÷ minutes`. Sessions under 1 minute are saved without a speed.
-- **Log past session**: enter the minutes and pages for a session you didn't time.
+- **Log session**: enter the minutes and pages for a session you didn't time.
 - **Speed tab**: your average WPM (total words ÷ total minutes), the last 7 days, total time, pages, your fastest session, and a chart of your speed over time. You can show all books or just one.
 - **Time left**: each book shows an estimate of how long it will take you to finish, based on your speed in that book.
 - **Working out words per page**: none of the free book databases include word counts, so words per page is something you measure. Under **Work it out for this book** there are three ways to do it:
