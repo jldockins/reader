@@ -163,7 +163,8 @@ function bookCard(b) {
   const pct = b.totalPages ? Math.min(100, (b.currentPage / b.totalPages) * 100) : 0;
   return `<button class="card book-card" data-action="open-book" data-id="${b.id}">
     <div class="row">
-      <div><h3>${esc(b.title)}</h3>${b.author ? `<div class="author">${esc(b.author)}</div>` : ''}</div>
+      ${b.cover ? `<img class="cover" src="${esc(b.cover)}" alt="" loading="lazy" onerror="this.remove()">` : ''}
+      <div class="grow"><h3>${esc(b.title)}</h3>${b.author ? `<div class="author">${esc(b.author)}</div>` : ''}</div>
       ${st.avgWpm ? `<div class="wpm">${num(st.avgWpm)} <small>wpm</small></div>` : ''}
     </div>
     <div class="progress"><span style="width:${pct.toFixed(1)}%"></span></div>
@@ -381,6 +382,16 @@ function bookFormSheet(book) {
     <div class="sheet-head"><h2>${book ? 'Edit book' : 'Add a book'}</h2>
       <button class="link-btn" data-action="close">Cancel</button></div>
     <form id="book-form" autocomplete="off">
+      <button type="button" class="btn secondary scan-btn" data-action="scan">📷 Scan barcode</button>
+      <div class="lookup-row">
+        <label class="field"><span>ISBN (optional)</span>
+          <input name="isbn" inputmode="numeric" value="${esc(b.isbn || '')}" placeholder="978…"></label>
+        <button type="button" class="btn secondary" data-action="lookup-isbn">Look up</button>
+      </div>
+      <div class="lookup-status" id="lookup-status" ${b.publisher || b.year ? '' : 'hidden'}>${esc(editionLine(b))}</div>
+      <input type="hidden" name="cover" value="${esc(b.cover || '')}">
+      <input type="hidden" name="publisher" value="${esc(b.publisher || '')}">
+      <input type="hidden" name="year" value="${esc(b.year || '')}">
       <label class="field"><span>Title</span><input name="title" required value="${esc(b.title)}" placeholder="e.g. The Hobbit"></label>
       <label class="field"><span>Author (optional)</span><input name="author" value="${esc(b.author)}"></label>
       <div class="row-2">
@@ -389,15 +400,27 @@ function bookFormSheet(book) {
       </div>
       <label class="field"><span>Words per page</span>
         <input name="wordsPerPage" type="number" inputmode="numeric" min="20" max="2000" required value="${b.wordsPerPage}">
-        <div class="hint">Used to turn pages into words. <button type="button" class="link-btn" data-action="toggle-estimator">Estimate it for this book</button></div>
+        <div class="hint">Used to turn pages into words. <button type="button" class="link-btn" data-action="toggle-estimator">Work it out for this book</button></div>
       </label>
       <div class="estimator" id="estimator" hidden>
-        Count the words on 3 full lines, then count the lines on a full page.
+        <p class="est-title">Most accurate: count one full page</p>
+        <p class="est-help">Pick a page in the middle of a chapter with no breaks and count every word.</p>
+        <div class="lookup-row">
+          <label class="field"><span>Words on one full page</span><input id="est-page" type="number" inputmode="numeric" min="1"></label>
+          <button type="button" class="btn secondary" data-action="apply-estimate" data-method="page">Use</button>
+        </div>
+        <p class="est-title">Quicker: sample 3 lines</p>
         <div class="row-2">
           <label class="field"><span>Words in 3 lines</span><input id="est-words" type="number" inputmode="numeric" min="1"></label>
           <label class="field"><span>Lines per page</span><input id="est-lines" type="number" inputmode="numeric" min="1"></label>
         </div>
-        <button type="button" class="btn secondary" data-action="apply-estimate">Use estimate</button>
+        <button type="button" class="btn secondary" data-action="apply-estimate" data-method="lines">Use 3-line estimate</button>
+        <p class="est-title">If you know the book's total word count</p>
+        <p class="est-help">Divided by the total pages above (your edition's page count from the scan).</p>
+        <div class="lookup-row">
+          <label class="field"><span>Total words in the book</span><input id="est-total" type="number" inputmode="numeric" min="1"></label>
+          <button type="button" class="btn secondary" data-action="apply-estimate" data-method="total">Use</button>
+        </div>
       </div>
       <label class="field"><span>Status</span><select name="status">
         ${[['reading', 'Reading'], ['want', 'Want to read'], ['finished', 'Finished']]
@@ -418,6 +441,10 @@ function bookFormSheet(book) {
       currentPage: Math.min(totalPages, Math.max(0, int(fd.get('currentPage')))),
       wordsPerPage: Math.max(20, int(fd.get('wordsPerPage')) || state.settings.defaultWordsPerPage),
       status: String(fd.get('status')),
+      isbn: normalizeIsbn(String(fd.get('isbn') || '')) || String(fd.get('isbn') || '').trim(),
+      cover: String(fd.get('cover') || ''),
+      publisher: String(fd.get('publisher') || ''),
+      year: String(fd.get('year') || ''),
     };
     if (!data.title) return;
     if (book) {
@@ -448,7 +475,9 @@ function bookDetailSheet(id) {
 
   openSheet(`
     <div class="sheet-head">
-      <div><h2>${esc(b.title)}</h2>${b.author ? `<div class="sub">${esc(b.author)}</div>` : ''}</div>
+      ${b.cover ? `<img class="cover" src="${esc(b.cover)}" alt="" onerror="this.remove()">` : ''}
+      <div class="grow"><h2>${esc(b.title)}</h2>${b.author ? `<div class="sub">${esc(b.author)}</div>` : ''}
+        ${editionLine(b) ? `<div class="edition">${esc(editionLine(b))}</div>` : ''}</div>
       <button class="link-btn" data-action="close">Done</button>
     </div>
     <div class="progress"><span style="width:${pct.toFixed(1)}%"></span></div>
@@ -612,6 +641,202 @@ function manualSessionSheet(bookId) {
   });
 }
 
+/* ---------- barcode scanning & ISBN lookup ---------- */
+
+const ZXING_URL = 'https://cdn.jsdelivr.net/npm/@zxing/browser@0.1.5/umd/zxing-browser.min.js';
+
+function editionLine(b) {
+  return [b.publisher, b.year, b.isbn && `ISBN ${b.isbn}`].filter(Boolean).join(' · ');
+}
+
+/** Returns a 13-digit ISBN, or '' if the text isn't a valid ISBN-10/13. */
+function normalizeIsbn(text) {
+  const s = String(text).replace(/[^0-9Xx]/g, '').toUpperCase();
+  if (s.length === 13 && /^97[89]\d{10}$/.test(s)) {
+    const sum = [...s.slice(0, 12)].reduce((acc, d, i) => acc + Number(d) * (i % 2 ? 3 : 1), 0);
+    return (10 - (sum % 10)) % 10 === Number(s[12]) ? s : '';
+  }
+  if (s.length === 10 && /^\d{9}[\dX]$/.test(s)) {
+    const sum = [...s].reduce((acc, d, i) => acc + (d === 'X' ? 10 : Number(d)) * (10 - i), 0);
+    if (sum % 11) return '';
+    const core = '978' + s.slice(0, 9);
+    const sum13 = [...core].reduce((acc, d, i) => acc + Number(d) * (i % 2 ? 3 : 1), 0);
+    return core + ((10 - (sum13 % 10)) % 10);
+  }
+  return '';
+}
+
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = resolve;
+    s.onerror = () => reject(new Error('Could not load the barcode scanner. Are you online?'));
+    document.head.appendChild(s);
+  });
+}
+
+/** Opens a full-screen camera view and resolves with an ISBN, or null if cancelled. */
+function scanBarcode() {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'scanner';
+    overlay.innerHTML = `
+      <video playsinline muted autoplay></video>
+      <div class="scanner-frame" aria-hidden="true"></div>
+      <div class="scanner-text">Point the camera at the barcode on the back of the book</div>
+      <button class="btn secondary scanner-cancel">Cancel</button>`;
+    document.body.appendChild(overlay);
+    const video = $('video', overlay);
+    const text = $('.scanner-text', overlay);
+    let stream = null, zxControls = null, timer = null, done = false;
+
+    const finish = (isbn) => {
+      if (done) return;
+      done = true;
+      clearInterval(timer);
+      if (zxControls) zxControls.stop();
+      if (stream) stream.getTracks().forEach((t) => t.stop());
+      overlay.remove();
+      resolve(isbn);
+    };
+    const onCode = (raw) => {
+      const isbn = normalizeIsbn(raw);
+      if (isbn) {
+        if (navigator.vibrate) navigator.vibrate(60);
+        finish(isbn);
+      } else {
+        text.textContent = "That barcode isn't an ISBN. Try the main barcode (starts with 978 or 979).";
+      }
+    };
+    const fail = (err) => {
+      const denied = err && (err.name === 'NotAllowedError' || err.name === 'SecurityError');
+      text.textContent = denied
+        ? 'Camera access was blocked. Allow camera access for this site in your browser settings, or type the ISBN instead.'
+        : (err && err.message) || 'Could not start the camera. You can type the ISBN instead.';
+    };
+    $('.scanner-cancel', overlay).addEventListener('click', () => finish(null));
+
+    (async () => {
+      try {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          throw new Error("This browser can't use the camera here. Type the ISBN instead.");
+        }
+        const constraints = { video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false };
+        const supported = 'BarcodeDetector' in window
+          ? await window.BarcodeDetector.getSupportedFormats().catch(() => [])
+          : [];
+        const native = supported.includes('ean_13');
+        if (native) {
+          // Built into Chrome on Android — fast and needs no download.
+          stream = await navigator.mediaDevices.getUserMedia(constraints);
+          if (done) return finish(null);
+          video.srcObject = stream;
+          await video.play();
+          const detector = new window.BarcodeDetector({ formats: ['ean_13', 'upc_a'].filter((f) => supported.includes(f)) });
+          let busy = false;
+          timer = setInterval(async () => {
+            if (busy || done || video.readyState < 2) return;
+            busy = true;
+            try {
+              const codes = await detector.detect(video);
+              if (codes.length) onCode(codes[0].rawValue);
+            } catch { /* keep trying */ }
+            busy = false;
+          }, 200);
+        } else {
+          // iPhone Safari and others: use the ZXing library.
+          if (!window.ZXingBrowser) await loadScript(ZXING_URL);
+          if (done) return;
+          const reader = new window.ZXingBrowser.BrowserMultiFormatReader();
+          zxControls = await reader.decodeFromConstraints(constraints, video, (result) => {
+            if (result && !done) onCode(result.getText());
+          });
+          if (done) zxControls.stop();
+        }
+      } catch (err) {
+        fail(err);
+      }
+    })();
+  });
+}
+
+async function fetchJson(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+/** Looks the edition up in Open Library, then Google Books for anything missing. */
+async function lookupIsbn(isbn) {
+  const info = { isbn };
+  try {
+    const d = await fetchJson(`https://openlibrary.org/api/books?bibkeys=ISBN:${isbn}&format=json&jscmd=data`);
+    const b = d[`ISBN:${isbn}`];
+    if (b) {
+      info.title = b.subtitle ? `${b.title}: ${b.subtitle}` : b.title;
+      info.author = (b.authors || []).map((a) => a.name).join(', ');
+      info.pages = b.number_of_pages || null;
+      info.cover = (b.cover && (b.cover.medium || b.cover.small)) || '';
+      info.publisher = (b.publishers || [])[0]?.name || '';
+      info.year = ((b.publish_date || '').match(/\d{4}/) || [''])[0];
+      info.source = 'Open Library';
+    }
+  } catch { /* try the next source */ }
+
+  if (!info.title || !info.pages) {
+    try {
+      const d = await fetchJson(`https://www.googleapis.com/books/v1/volumes?q=isbn:${isbn}`);
+      const v = d.items && d.items[0] && d.items[0].volumeInfo;
+      if (v) {
+        info.title = info.title || v.title;
+        info.author = info.author || (v.authors || []).join(', ');
+        info.pages = info.pages || v.pageCount || null;
+        info.cover = info.cover || (v.imageLinks && (v.imageLinks.thumbnail || '').replace('http:', 'https:')) || '';
+        info.publisher = info.publisher || v.publisher || '';
+        info.year = info.year || (v.publishedDate || '').slice(0, 4);
+        info.source = info.source ? `${info.source} + Google Books` : 'Google Books';
+      }
+    } catch { /* ignore */ }
+  }
+  return info.title ? info : null;
+}
+
+async function scanAndFill() {
+  const isbn = await scanBarcode();
+  if (isbn) lookupAndFill(isbn);
+}
+
+async function lookupAndFill(raw) {
+  const form = $('#book-form');
+  if (!form) return;
+  const status = $('#lookup-status');
+  const isbn = normalizeIsbn(raw);
+  form.elements.isbn.value = isbn || raw;
+  status.hidden = false;
+  if (!isbn) { status.textContent = "That doesn't look like a valid ISBN. Check the digits under the barcode."; return; }
+  if (!navigator.onLine) { status.textContent = "You're offline — fill in the details by hand, or look it up later."; return; }
+  status.textContent = `Looking up ${isbn}…`;
+  const info = await lookupIsbn(isbn);
+  if (!$('#book-form')) return; // sheet was closed meanwhile
+  if (!info) {
+    status.textContent = `Couldn't find ISBN ${isbn}. Fill in the details by hand.`;
+    return;
+  }
+  const f = form.elements;
+  f.title.value = info.title || f.title.value;
+  f.author.value = info.author || f.author.value;
+  if (info.pages) f.totalPages.value = info.pages;
+  f.cover.value = info.cover || '';
+  f.publisher.value = info.publisher || '';
+  f.year.value = info.year || '';
+  status.innerHTML = `${info.cover ? `<img src="${esc(info.cover)}" alt="" onerror="this.remove()">` : ''}
+    <div><strong>Found it</strong> (${esc(info.source)})<br>${esc(editionLine(info))}<br>
+    ${info.pages
+      ? `${info.pages} pages in this edition — check it against the last numbered page in your copy.`
+      : 'No page count listed — enter it from your copy.'}</div>`;
+}
+
 /* ---------- backup ---------- */
 
 function exportData() {
@@ -692,13 +917,27 @@ document.addEventListener('click', (e) => {
     }
     case 'toggle-estimator': $('#estimator').hidden = !$('#estimator').hidden; break;
     case 'apply-estimate': {
-      const w = int($('#est-words').value), l = int($('#est-lines').value);
-      if (w > 0 && l > 0) {
-        document.querySelector('#book-form [name=wordsPerPage]').value = Math.round((w / 3) * l);
+      const form = $('#book-form');
+      let wpp = 0;
+      if (el.dataset.method === 'page') wpp = int($('#est-page').value);
+      if (el.dataset.method === 'lines') {
+        const w = int($('#est-words').value), l = int($('#est-lines').value);
+        if (w > 0 && l > 0) wpp = Math.round((w / 3) * l);
+      }
+      if (el.dataset.method === 'total') {
+        const pages = int(form.elements.totalPages.value);
+        if (!pages) { toast('Enter the total pages first.'); break; }
+        wpp = Math.round(int($('#est-total').value) / pages);
+      }
+      if (wpp >= 20) {
+        form.elements.wordsPerPage.value = wpp;
         $('#estimator').hidden = true;
-      } else toast('Fill in both numbers first.');
+        toast(`Words per page set to ${wpp}`);
+      } else toast('Fill in the numbers for that method first.');
       break;
     }
+    case 'scan': scanAndFill(); break;
+    case 'lookup-isbn': lookupAndFill($('#book-form').elements.isbn.value); break;
     case 'start-session': startSession(id); break;
     case 'open-timer': timerSheet(); break;
     case 'pause': pauseSession(); timerSheet(); break;

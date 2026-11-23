@@ -6,13 +6,17 @@ It's a Progressive Web App (PWA): plain HTML, CSS and JavaScript with no build s
 
 ## What it does
 
+- **Barcode scanning**: tap **Scan barcode** when adding a book and point your camera at the barcode on the back. The app reads the ISBN, which identifies the exact edition, and looks it up in Open Library (with Google Books as a backup) to fill in the title, author, cover, publisher, year and **that edition's page count**. You can also type an ISBN and tap **Look up**. This needs an internet connection.
 - **Books**: add a book with its title, author, total pages, current page and **words per page**. Books are sorted into Reading, Want to read and Finished.
 - **Timed reading sessions**: tap **Start reading**. The timer keeps running if you lock your phone or close the app. Tap **Stop & log pages** and enter the page you reached.
 - **Reading speed**: `WPM = (pages read × words per page) ÷ minutes`. Sessions under 1 minute are saved without a speed.
 - **Log past session**: enter the minutes and pages for a session you didn't time.
 - **Speed tab**: your average WPM (total words ÷ total minutes), the last 7 days, total time, pages, your fastest session, and a chart of your speed over time. You can show all books or just one.
 - **Time left**: each book shows an estimate of how long it will take you to finish, based on your speed in that book.
-- **Words-per-page estimator**: count the words on 3 lines and the number of lines on a page.
+- **Working out words per page**: none of the free book databases include word counts, so words per page is something you measure. Under **Work it out for this book** there are three ways to do it:
+  1. Count the words on one full page. This is the most accurate.
+  2. Count the words on 3 lines and the number of lines on a page.
+  3. Enter the book's total word count, if you know it. It's divided by the edition's page count.
 - **Backup**: in Settings you can export and import a JSON file. Your data is stored only in your phone's browser (localStorage).
 
 ## Run it on your computer
@@ -51,3 +55,5 @@ Edit the files and upload them again. The service worker checks the network firs
 | `manifest.json` | App name, icons and colors used when installed |
 | `sw.js` | Service worker that lets the app work offline |
 | `icons/` | Home-screen icons |
+
+The barcode scanner uses the phone's built-in barcode detector where one is available (Chrome on Android). Elsewhere, such as Safari on iPhone, it loads the [ZXing](https://github.com/zxing-js/browser) library from jsDelivr the first time you scan.
