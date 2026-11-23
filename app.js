@@ -761,10 +761,19 @@ function scanBarcode() {
   });
 }
 
-async function fetchJson(url) {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
+async function fetchJson(url, retries = 1) {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } catch (err) {
+    // Free book APIs fail now and then; one quick retry usually fixes it.
+    if (retries > 0) {
+      await new Promise((r) => setTimeout(r, 800));
+      return fetchJson(url, retries - 1);
+    }
+    throw err;
+  }
 }
 
 /** Looks the edition up in Open Library, then Google Books for anything missing. */
