@@ -123,10 +123,22 @@ function calcWpm(pages, wordsPerPage, durationSec) {
   return (pages * wordsPerPage) / (durationSec / 60);
 }
 
+/** A session's words and speed using the book's current words-per-page,
+ *  so correcting words-per-page later also corrects past sessions. */
+function scoreSession(s) {
+  const b = getBook(s.bookId);
+  const wpp = b ? b.wordsPerPage : (s.pages ? s.words / s.pages : 0);
+  return { ...s, words: s.pages * wpp, wpm: calcWpm(s.pages, wpp, s.durationSec) };
+}
+
+/** Words-per-page is still the untouched default — a guess, not this book's real number. */
+const wppIsGuess = (b) => !b.wppSet && b.wordsPerPage === state.settings.defaultWordsPerPage;
+
 /** Weighted average: total words read ÷ total minutes (only scored sessions). */
 function summarize(sessions) {
   let sec = 0, words = 0, pages = 0, scoredSec = 0, scoredWords = 0, best = 0;
-  for (const s of sessions) {
+  for (const raw of sessions) {
+    const s = scoreSession(raw);
     sec += s.durationSec;
     pages += s.pages;
     words += s.words;
@@ -320,7 +332,8 @@ function renderStats() {
     <div class="list">${recent.map((s) => sessionRow(s, filterId === 'all')).join('')}</div>`;
 }
 
-function sessionRow(s, showBook) {
+function sessionRow(raw, showBook) {
+  const s = scoreSession(raw);
   const b = getBook(s.bookId);
   const title = showBook && b ? esc(b.title) : fmtDate(s.date, { weekday: 'short', month: 'short', day: 'numeric' });
   const sub = `${showBook ? fmtDate(s.date) + ' · ' : ''}${fmtDuration(s.durationSec)} · pp. ${s.startPage}–${s.endPage} (${s.pages} pages)`;
@@ -371,7 +384,7 @@ function niceStep(v, parts = 4) {
 }
 
 function chartSvg(sessions, avg) {
-  const pts = sessions.filter((s) => s.wpm != null).sort((a, b) => a.date - b.date).slice(-30);
+  const pts = sessions.map(scoreSession).filter((s) => s.wpm != null).sort((a, b) => a.date - b.date).slice(-30);
   if (!pts.length) {
     chartPoints = [];
     return `<div class="prose"><p>Read for at least a minute in a session to see your speed here.</p></div>`;
@@ -496,7 +509,7 @@ function closeSheet() {
   render();
 }
 
-function bookFormSheet(book) {
+function bookFormSheet(book, { estimate = false } = {}) {
   const b = book || {
     title: '', author: '', totalPages: '', currentPage: 0,
     wordsPerPage: state.settings.defaultWordsPerPage, status: 'reading',
@@ -520,13 +533,17 @@ function bookFormSheet(book) {
       <label class="field"><span>Author (optional)</span><input name="author" value="${esc(b.author)}"></label>
       <div class="row-2">
         <label class="field"><span>Total pages</span><input name="totalPages" type="number" inputmode="numeric" min="1" required value="${b.totalPages}"></label>
-        <label class="field"><span>Current page</span><input name="currentPage" type="number" inputmode="numeric" min="0" value="${b.currentPage}"></label>
+        <label class="field"><span>Last page finished</span><input name="currentPage" type="number" inputmode="numeric" min="0" value="${b.currentPage}"></label>
       </div>
       <label class="field"><span>Words per page</span>
         <input name="wordsPerPage" type="number" inputmode="numeric" min="20" max="2000" required value="${b.wordsPerPage}">
-        <div class="hint">Used to turn pages into words. <button type="button" class="link-btn" data-action="toggle-estimator">Work it out for this book</button></div>
+        <input type="hidden" name="wppSet" value="${b.wppSet ? '1' : ''}">
+        <div class="hint" id="wpp-hint">${wppIsGuess(b)
+          ? `<strong class="warn">This is a guess.</strong> Book databases don’t list words per page, so your speed is only as accurate as this number.`
+          : 'Used to turn pages into words.'}
+          <button type="button" class="link-btn" data-action="toggle-estimator">Work it out for this book</button></div>
       </label>
-      <div class="estimator" id="estimator" hidden>
+      <div class="estimator" id="estimator" ${estimate ? '' : 'hidden'}>
         <p class="est-title">Most accurate: count one full page</p>
         <p class="est-help">Pick a page in the middle of a chapter with no breaks and count every word.</p>
         <div class="lookup-row">
@@ -554,6 +571,13 @@ function bookFormSheet(book) {
       ${book ? `<button class="btn danger" type="button" data-action="delete-book" data-id="${book.id}">Delete book</button>` : ''}
     </form>`);
 
+  const markWppSet = () => {
+    $('#book-form').elements.wppSet.value = '1';
+    $('#wpp-hint').innerHTML = 'Used to turn pages into words.';
+  };
+  $('#book-form').elements.wordsPerPage.addEventListener('input', markWppSet);
+  if (estimate) setTimeout(() => $('#estimator').scrollIntoView({ block: 'start', behavior: 'smooth' }), 50);
+
   $('#book-form').addEventListener('submit', (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
@@ -564,6 +588,7 @@ function bookFormSheet(book) {
       totalPages,
       currentPage: Math.min(totalPages, Math.max(0, int(fd.get('currentPage')))),
       wordsPerPage: Math.max(20, int(fd.get('wordsPerPage')) || state.settings.defaultWordsPerPage),
+      wppSet: fd.get('wppSet') === '1',
       status: String(fd.get('status')),
       isbn: normalizeIsbn(String(fd.get('isbn') || '')) || String(fd.get('isbn') || '').trim(),
       cover: String(fd.get('cover') || ''),
@@ -573,7 +598,9 @@ function bookFormSheet(book) {
     if (!data.title) return;
     if (book) {
       if (data.status === 'finished' && book.status !== 'finished') data.finishedAt = Date.now();
+      const wppChanged = data.wordsPerPage !== book.wordsPerPage;
       Object.assign(book, data);
+      if (wppChanged && sessionsFor(book.id).length) toast('Speeds for past sessions updated');
       save();
       bookDetailSheet(book.id);
     } else {
@@ -607,11 +634,15 @@ function bookDetailSheet(id) {
     <div class="progress"><span style="width:${pct.toFixed(1)}%"></span></div>
     <div class="meta" style="margin-bottom:14px"><span>Page ${b.currentPage} of ${b.totalPages}</span><span>${Math.round(pct)}%</span></div>
 
+    ${wppIsGuess(b) ? `<div class="callout">
+      <p><strong>Speed is an estimate.</strong> It assumes ${b.wordsPerPage} words per page. Count a page or a few lines in this book to get an accurate speed. Past sessions update too.</p>
+      <button class="btn secondary" data-action="estimate-wpp" data-id="${id}">Set words per page</button>
+    </div>` : ''}
     <div class="stat-grid">
       <div class="stat"><div class="label">Avg speed</div><div class="value">${st.avgWpm ? num(st.avgWpm) : '—'} <small>wpm</small></div></div>
       <div class="stat"><div class="label">Time read</div><div class="value">${st.sec ? fmtDuration(st.sec) : '—'}</div></div>
       <div class="stat"><div class="label">Time left (est.)</div><div class="value">${b.status === 'finished' ? 'Done' : remainingSec != null ? fmtDuration(remainingSec) : '—'}</div></div>
-      <div class="stat"><div class="label">Words / page</div><div class="value">${b.wordsPerPage}</div></div>
+      <div class="stat"><div class="label">Words / page</div><div class="value">${b.wordsPerPage}${wppIsGuess(b) ? ' <small>guess</small>' : ''}</div></div>
     </div>
 
     ${isActiveHere
@@ -631,11 +662,14 @@ function bookDetailSheet(id) {
   `);
 }
 
+/** The page after the last one finished — where the next session begins. */
+const firstPageFor = (b) => Math.max(1, Math.min(b.totalPages, b.currentPage + 1));
+
 function startSession(bookId) {
   const b = getBook(bookId);
   if (!b || state.active) return;
   if (b.status !== 'reading') { b.status = 'reading'; b.finishedAt = null; }
-  state.active = { bookId, startPage: b.currentPage, startedAt: Date.now(), accumulatedMs: 0, runningSince: Date.now() };
+  state.active = { bookId, startPage: firstPageFor(b), startedAt: Date.now(), accumulatedMs: 0, runningSince: Date.now() };
   save();
   timerSheet();
 }
@@ -655,8 +689,8 @@ function timerSheet() {
       <div class="clock" data-clock>${fmtClock(activeElapsedMs())}</div>
       <div class="state">${running ? '<span class="live-dot"></span>Timer running — keep reading' : 'Paused'}</div>
     </div>
-    <label class="field"><span>Started on page</span>
-      <input id="start-page" type="number" inputmode="numeric" min="0" max="${b.totalPages}" value="${a.startPage}"></label>
+    <label class="field"><span>First page you're reading</span>
+      <input id="start-page" type="number" inputmode="numeric" min="1" max="${b.totalPages}" value="${a.startPage}"></label>
     <div class="btn-row">
       <button class="btn secondary" data-action="${running ? 'pause' : 'resume'}">${running ? 'Pause' : 'Resume'}</button>
       <button class="btn" data-action="stop">Stop &amp; log pages</button>
@@ -665,7 +699,7 @@ function timerSheet() {
     <div class="prose" style="margin-top:8px"><p>You can lock your phone or close the app — the timer keeps counting.</p></div>
   `);
   $('#start-page').addEventListener('change', (e) => {
-    state.active.startPage = Math.max(0, int(e.target.value));
+    state.active.startPage = Math.max(1, int(e.target.value));
     save();
   });
 }
@@ -688,24 +722,25 @@ function stopSheet() {
       <div><h2>Nice reading!</h2><div class="sub">${esc(b.title)} · ${fmtDuration(durationSec)}</div></div>
     </div>
     <div class="row-2">
-      <label class="field"><span>Started on page</span><input id="sp" type="number" inputmode="numeric" min="0" value="${a.startPage}"></label>
-      <label class="field"><span>Stopped on page</span><input id="ep" type="number" inputmode="numeric" min="0" max="${b.totalPages}" placeholder="Page you reached" autofocus></label>
+      <label class="field"><span>First page read</span><input id="sp" type="number" inputmode="numeric" min="1" value="${a.startPage}"></label>
+      <label class="field"><span>Last page finished</span><input id="ep" type="number" inputmode="numeric" min="1" max="${b.totalPages}" placeholder="e.g. ${a.startPage + 9}" autofocus></label>
     </div>
-    <div class="result" id="result"><div class="label">Enter the page you reached</div></div>
+    <div class="hint" style="margin:-6px 0 12px">Count a page only if you finished it. Reading pages 10 to 19 counts as 10 pages.</div>
+    <div class="result" id="result"><div class="label">Enter the last page you finished</div></div>
     <button class="btn" id="save-session" disabled>Save session</button>
     <button class="btn secondary" data-action="resume-from-stop">Keep reading</button>
   `);
 
   const update = () => {
     const sp = int($('#sp').value), ep = int($('#ep').value);
-    const pages = ep - sp;
-    const ok = $('#ep').value !== '' && pages > 0;
+    const pages = ep - sp + 1;
+    const ok = $('#ep').value !== '' && ep >= sp;
     $('#save-session').disabled = !ok;
     const wpm = ok ? calcWpm(pages, b.wordsPerPage, durationSec) : null;
     $('#result').innerHTML = !ok
-      ? `<div class="label">${$('#ep').value === '' ? 'Enter the page you reached' : 'End page must be after the start page'}</div>`
+      ? `<div class="label">${$('#ep').value === '' ? 'Enter the last page you finished' : 'The last page can’t be before the first page'}</div>`
       : wpm != null
-        ? `<div class="value">${num(wpm)} wpm</div><div class="label">${pages} pages · ~${num(pages * b.wordsPerPage)} words</div>`
+        ? `<div class="value">${num(wpm)} wpm</div><div class="label">${pages} page${pages === 1 ? '' : 's'} · ~${num(pages * b.wordsPerPage)} words${wppIsGuess(b) ? `<br>Based on a guessed ${b.wordsPerPage} words per page` : ''}</div>`
         : `<div class="label">${pages} pages. Sessions under a minute are saved without a speed.</div>`;
   };
   $('#sp').addEventListener('input', update);
@@ -720,7 +755,7 @@ function stopSheet() {
 }
 
 function recordSession(b, { date, durationSec, startPage, endPage }) {
-  const pages = Math.max(0, endPage - startPage);
+  const pages = Math.max(0, endPage - startPage + 1);
   const words = pages * b.wordsPerPage;
   const wpm = calcWpm(pages, b.wordsPerPage, durationSec);
   state.sessions.push({ id: uid(), bookId: b.id, date, durationSec, startPage, endPage, pages, words, wpm });
@@ -745,9 +780,10 @@ function manualSessionSheet(bookId) {
       <label class="field"><span>Date</span><input name="date" type="date" value="${localDate}" max="${localDate}" required></label>
       <label class="field"><span>Minutes read</span><input name="minutes" type="number" inputmode="decimal" min="1" step="any" required></label>
       <div class="row-2">
-        <label class="field"><span>Start page</span><input name="sp" type="number" inputmode="numeric" min="0" value="${b.currentPage}" required></label>
-        <label class="field"><span>End page</span><input name="ep" type="number" inputmode="numeric" min="1" max="${b.totalPages}" required></label>
+        <label class="field"><span>First page read</span><input name="sp" type="number" inputmode="numeric" min="1" value="${firstPageFor(b)}" required></label>
+        <label class="field"><span>Last page finished</span><input name="ep" type="number" inputmode="numeric" min="1" max="${b.totalPages}" required></label>
       </div>
+      <div class="hint" style="margin:-6px 0 12px">Reading pages 10 to 19 counts as 10 pages.</div>
       <button class="btn" type="submit">Save session</button>
     </form>`);
   $('#manual-form').addEventListener('submit', (e) => {
@@ -755,7 +791,7 @@ function manualSessionSheet(bookId) {
     const fd = new FormData(e.target);
     const sp = int(fd.get('sp')), ep = Math.min(b.totalPages, int(fd.get('ep')));
     const minutes = parseFloat(fd.get('minutes'));
-    if (!(ep > sp)) return toast('End page must be after the start page.');
+    if (!(ep >= sp)) return toast('The last page can’t be before the first page.');
     if (!(minutes > 0)) return toast('Enter how many minutes you read.');
     const [y, m, d] = String(fd.get('date')).split('-').map(Number);
     const date = new Date(y, m - 1, d, 12).getTime();
@@ -1225,6 +1261,7 @@ document.addEventListener('click', (e) => {
     case 'add-book': bookFormSheet(); break;
     case 'open-book': bookDetailSheet(id); break;
     case 'edit-book': bookFormSheet(getBook(id)); break;
+    case 'estimate-wpp': bookFormSheet(getBook(id), { estimate: true }); break;
     case 'back-to-book': bookDetailSheet(id); break;
     case 'close': closeSheet(); break;
     case 'finish-book': {
@@ -1266,6 +1303,8 @@ document.addEventListener('click', (e) => {
       }
       if (wpp >= 20) {
         form.elements.wordsPerPage.value = wpp;
+        form.elements.wppSet.value = '1';
+        $('#wpp-hint').innerHTML = 'Used to turn pages into words.';
         $('#estimator').hidden = true;
         toast(`Words per page set to ${wpp}`);
       } else toast('Fill in the numbers for that method first.');
